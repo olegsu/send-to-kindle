@@ -1,7 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"github.com/olegsu/send-to-kindle/cmd/kindle"
+)
 
 func main() {
-	fmt.Println("Send To Kindle")
+	if err := kindle.Build().Execute(); err != nil {
+		panic(err)
+	}
 }
