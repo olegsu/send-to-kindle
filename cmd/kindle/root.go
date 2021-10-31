@@ -5,7 +5,7 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "kindle",
+	Use:     "send-to-kindle",
 	Version: "0.1.0",
 }
 
