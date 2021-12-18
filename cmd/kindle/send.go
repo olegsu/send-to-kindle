@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strings"
 
 	_ "embed"
@@ -62,6 +63,10 @@ var sendCmd = &cobra.Command{
 		ebook.SetLang(sendCmdFlags.language)
 		out := &bytes.Buffer{}
 		ebook.WriteTo(out)
+
+		if err := os.WriteFile(sendCmdFlags.title+".epub", out.Bytes(), os.ModePerm); err != nil {
+			lgr.Info("failed to save local epub version")
+		}
 
 		if sendCmdFlags.kindleEMail != "" {
 			lgr.Info("Sending email", "kindle", sendCmdFlags.kindleEMail)
