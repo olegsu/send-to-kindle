@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	_ "embed"
 
@@ -19,10 +20,9 @@ import (
 )
 
 type sendCmdFlagsOptions struct {
-	link                     string
 	cookies                  string
 	language                 string
-	title                    string
+	titleSelector            string
 	kindleEMail              string
 	originEmail              string
 	originEmailPassword      string
@@ -33,10 +33,12 @@ type sendCmdFlagsOptions struct {
 
 var sendCmdFlags = sendCmdFlagsOptions{}
 var sendCmd = &cobra.Command{
-	Use: "send",
+	Use:  "send",
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		ebook := epub.NewEpub(sendCmdFlags.title)
 		lgr := logger.New()
+		lgr.Info("starting", "args", args)
+		link := args[0]
 		cookies := []*http.Cookie{}
 		if sendCmdFlags.cookies != "" {
 			c, err := loadCookies(sendCmdFlags.cookies, lgr)
@@ -46,11 +48,18 @@ var sendCmd = &cobra.Command{
 			cookies = c
 		}
 
-		links, err := scrapeMainPage(sendCmdFlags.mainPageSelector, sendCmdFlags.link, cookies)
+		title, links, err := scrapeMainPage(sendCmdFlags.titleSelector, sendCmdFlags.mainPageSelector, link, cookies)
 		if err != nil {
 			panic(err)
 		}
 
+		if title == "" {
+			panic("no title")
+		}
+
+		lgr.Info("parsing content", "title", title)
+
+		ebook := epub.NewEpub(title)
 		for _, u := range links {
 			lgr.Info("Visiting", "url", u)
 			title, content, err := scrapeContentPage(sendCmdFlags.contentPageTitleSelector, sendCmdFlags.contentPageTextSelector, u, cookies)
@@ -64,13 +73,13 @@ var sendCmd = &cobra.Command{
 		out := &bytes.Buffer{}
 		ebook.WriteTo(out)
 
-		if err := os.WriteFile(sendCmdFlags.title+".epub", out.Bytes(), os.ModePerm); err != nil {
+		if err := os.WriteFile(title+".epub", out.Bytes(), os.ModePerm); err != nil {
 			lgr.Info("failed to save local epub version")
 		}
 
 		if sendCmdFlags.kindleEMail != "" {
 			lgr.Info("Sending email", "kindle", sendCmdFlags.kindleEMail)
-			if err := sendEmail(sendCmdFlags.kindleEMail, sendCmdFlags.originEmail, sendCmdFlags.originEmailPassword, sendCmdFlags.title, out.Bytes()); err != nil {
+			if err := sendEmail(sendCmdFlags.kindleEMail, sendCmdFlags.originEmail, sendCmdFlags.originEmailPassword, title, out.Bytes()); err != nil {
 				panic(err)
 			}
 		}
@@ -83,13 +92,12 @@ func init() {
 	rootCmd.AddCommand(sendCmd)
 	sendCmd.Flags().StringVarP(&sendCmdFlags.cookies, "cookies", "c", "", "Cookie file")
 	sendCmd.Flags().StringVarP(&sendCmdFlags.language, "language", "l", "eng", "Book main language")
-	sendCmd.Flags().StringVarP(&sendCmdFlags.title, "title", "t", "", "Book Title")
+	sendCmd.Flags().StringVarP(&sendCmdFlags.titleSelector, "title-selector", "t", "", "Book Title")
 	sendCmd.Flags().StringVarP(&sendCmdFlags.kindleEMail, "kindle-email", "k", "", "Kindle email address")
 	sendCmd.Flags().StringVarP(&sendCmdFlags.originEmail, "origin-email", "e", "", "Origin email address")
 	sendCmd.Flags().StringVarP(&sendCmdFlags.originEmailPassword, "origin-email-password", "p", "", "Origin email password")
-	sendCmd.Flags().StringVarP(&sendCmdFlags.link, "url", "u", "", "URL to parse")
 	sendCmd.Flags().StringVarP(&sendCmdFlags.mainPageSelector, "href-selector", "a", "a[href]", "HTML selector to be used in the main page")
-	sendCmd.Flags().StringVar(&sendCmdFlags.contentPageTitleSelector, "title-selector", "h1", "HTML selector to be used every content page to find the title")
+	sendCmd.Flags().StringVar(&sendCmdFlags.contentPageTitleSelector, "content-title-selector", "h1", "HTML selector to be used every content page to find the title")
 	sendCmd.Flags().StringVar(&sendCmdFlags.contentPageTextSelector, "content-selector", "p", "HTML selector to be used every content page to find the articles content")
 }
 
@@ -110,18 +118,29 @@ func sendEmail(kindle string, origin string, password string, bookName string, b
 	if err != nil {
 		return fmt.Errorf("failed to connect to smtp server: %w", err)
 	}
+	smtp.SendTimeout = time.Minute
+
 	if err := email.Send(smtp); err != nil {
 		return fmt.Errorf("failed to send email: %w", err)
 	}
 	return nil
 }
 
-func scrapeMainPage(selector string, link string, cookies []*http.Cookie) ([]string, error) {
+func scrapeMainPage(titleSelector string, selector string, link string, cookies []*http.Cookie) (string, []string, error) {
+	title := ""
 	res := []string{}
 	c := colly.NewCollector()
 	if err := c.SetCookies(link, cookies); err != nil {
-		return nil, err
+		return "", nil, err
 	}
+
+	c.OnHTML(titleSelector, func(h *colly.HTMLElement) {
+		if h.Text != "" {
+			title = h.Text
+			return
+		}
+	})
+
 	c.OnHTML(selector, func(h *colly.HTMLElement) {
 		link := h.Attr("href")
 		if link == "" {
@@ -130,7 +149,7 @@ func scrapeMainPage(selector string, link string, cookies []*http.Cookie) ([]str
 		res = append(res, link)
 	})
 	err := c.Visit(link)
-	return res, err
+	return strings.ReplaceAll(strings.TrimSpace(title), "\n", ""), res, err
 }
 
 func scrapeContentPage(titleSelector string, contentSelector string, link string, cookies []*http.Cookie) (string, string, error) {
